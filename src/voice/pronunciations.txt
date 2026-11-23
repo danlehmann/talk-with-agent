@@ -1,0 +1,15 @@
+# How to say words the voice gets wrong. One per line:
+#
+#     word = how to say it
+#
+# Matching ignores case and also covers a trailing "s" or "'s". Write the right
+# side as ordinary words or single letters; changes apply to the next sentence.
+callee = call-ee
+syscall = sis call
+mutex = mew tex
+struct = struckt
+enum = E numb
+tuple = toople
+worktree = work tree
+backend = back end
+frontend = front end
