@@ -1,7 +1,7 @@
 //! macOS voice backend using the system frameworks.
 //!
-//! Output: the Kokoro neural voice (see kokoro.rs) once its model is
-//! available; AVSpeechSynthesizer until then.
+//! Output: the Kokoro neural voice (see kokoro.rs). Until its model has been
+//! downloaded, replies are only shown, not spoken.
 //! Input: SpeechAnalyzer on macOS 26+ (always on-device; reached through the
 //! Swift shim in macos/Transcriber.swift), otherwise the older
 //! SFSpeechRecognizer + AVAudioEngine.
@@ -14,16 +14,13 @@ use super::whisper::Whisper;
 use super::{Voice, VoiceEvent, Waker};
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{Bool, ProtocolObject};
-use objc2::{define_class, msg_send, AnyThread, DefinedClass};
+use objc2::runtime::Bool;
+use objc2::AnyThread;
 use objc2_avf_audio::{
-    AVAudioApplication, AVAudioEngine, AVAudioPCMBuffer, AVAudioTime, AVSpeechBoundary,
-    AVSpeechSynthesizer, AVSpeechSynthesizerDelegate, AVSpeechUtterance,
+    AVAudioApplication, AVAudioEngine, AVAudioPCMBuffer, AVAudioTime,
 };
-use objc2_foundation::{NSError, NSObject, NSObjectProtocol, NSRange, NSString};
-use std::collections::VecDeque;
+use objc2_foundation::NSError;
 use std::ffi::{c_char, c_void, CStr};
-use std::sync::{Arc, Mutex};
 use objc2_speech::{
     SFSpeechAudioBufferRecognitionRequest, SFSpeechRecognitionResult, SFSpeechRecognitionTask,
     SFSpeechRecognizer, SFSpeechRecognizerAuthorizationStatus,
@@ -94,76 +91,6 @@ extern "C" fn pause_callback(context: *mut c_void, request: i32) {
     (context.waker)();
 }
 
-/// An utterance handed to the synthesizer and not yet finished.
-struct Queued {
-    /// Address of the AVSpeechUtterance, to match delegate callbacks.
-    utterance: usize,
-    id: u64,
-    text: String,
-    /// How far speech has got, in UTF-16 units (what NSString ranges use).
-    spoken_utf16: usize,
-}
-
-type SpeechQueue = Arc<Mutex<VecDeque<Queued>>>;
-
-fn addr(utterance: &AVSpeechUtterance) -> usize {
-    utterance as *const AVSpeechUtterance as usize
-}
-
-define_class!(
-    // Tracks speech progress so an interruption can report where it cut off.
-    #[unsafe(super(NSObject))]
-    #[name = "TWASpeechDelegate"]
-    #[ivars = SpeechQueue]
-    struct SpeechDelegate;
-
-    unsafe impl NSObjectProtocol for SpeechDelegate {}
-
-    unsafe impl AVSpeechSynthesizerDelegate for SpeechDelegate {
-        #[unsafe(method(speechSynthesizer:willSpeakRangeOfSpeechString:utterance:))]
-        fn will_speak(&self, _s: &AVSpeechSynthesizer, range: NSRange, utterance: &AVSpeechUtterance) {
-            let mut queue = self.ivars().lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(q) = queue.iter_mut().find(|q| q.utterance == addr(utterance)) {
-                q.spoken_utf16 = range.location + range.length;
-            }
-        }
-
-        #[unsafe(method(speechSynthesizer:didFinishSpeechUtterance:))]
-        fn did_finish(&self, _s: &AVSpeechSynthesizer, utterance: &AVSpeechUtterance) {
-            self.remove(utterance);
-        }
-
-        #[unsafe(method(speechSynthesizer:didCancelSpeechUtterance:))]
-        fn did_cancel(&self, _s: &AVSpeechSynthesizer, utterance: &AVSpeechUtterance) {
-            self.remove(utterance);
-        }
-    }
-);
-
-impl SpeechDelegate {
-    fn new(queue: SpeechQueue) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(queue);
-        unsafe { msg_send![super(this), init] }
-    }
-
-    fn remove(&self, utterance: &AVSpeechUtterance) {
-        let mut queue = self.ivars().lock().unwrap_or_else(|e| e.into_inner());
-        queue.retain(|q| q.utterance != addr(utterance));
-    }
-}
-
-/// The prefix of `text` that is `utf16` UTF-16 units long.
-fn utf16_prefix(text: &str, utf16: usize) -> &str {
-    let mut units = 0;
-    for (i, c) in text.char_indices() {
-        if units >= utf16 {
-            return &text[..i];
-        }
-        units += c.len_utf16();
-    }
-    text
-}
-
 /// Messages from framework callbacks (arbitrary threads) to the UI thread.
 enum Msg {
     SpeechAuth(bool),
@@ -211,12 +138,6 @@ impl Active {
 }
 
 pub struct MacVoice {
-    synth: Retained<AVSpeechSynthesizer>,
-    /// The synthesizer only holds its delegate weakly.
-    _delegate: Retained<SpeechDelegate>,
-    speech_queue: SpeechQueue,
-    /// Keeps utterances alive while queued, so their addresses stay unique.
-    utterances: Vec<Retained<AVSpeechUtterance>>,
     recognizer: Option<Retained<SFSpeechRecognizer>>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -228,7 +149,6 @@ pub struct MacVoice {
     want_listen: bool,
     active: Option<Active>,
     generation: u64,
-    last_speak: Option<Instant>,
     out: Vec<VoiceEvent>,
     /// Handed to the Swift shim; lives as long as the app.
     shim_context: *const ShimContext,
@@ -239,25 +159,17 @@ pub struct MacVoice {
 }
 
 impl MacVoice {
-    pub fn new(waker: Waker) -> Self {
+    pub fn new(waker: Waker, voice: Option<&str>, transcriber: Option<&str>, may_download: bool) -> Self {
         let (tx, rx) = channel();
-        let synth = unsafe { AVSpeechSynthesizer::new() };
-        let speech_queue = SpeechQueue::default();
-        let delegate = SpeechDelegate::new(speech_queue.clone());
-        unsafe { synth.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
         let shim_context = Box::into_raw(Box::new(ShimContext {
             tx: tx.clone(),
             waker: waker.clone(),
         }));
         MacVoice {
-            whisper: Whisper::start(waker.clone()),
-            kokoro: Kokoro::start(waker.clone()),
+            whisper: Whisper::start(waker.clone(), transcriber, may_download),
+            kokoro: Kokoro::start(waker.clone(), voice, may_download),
             refining: None,
             shim_context,
-            synth,
-            _delegate: delegate,
-            speech_queue,
-            utterances: Vec::new(),
             recognizer: None,
             tx,
             rx,
@@ -268,7 +180,6 @@ impl MacVoice {
             want_listen: false,
             active: None,
             generation: 0,
-            last_speak: None,
             out: Vec::new(),
         }
     }
@@ -434,56 +345,25 @@ impl MacVoice {
 
 impl Voice for MacVoice {
     fn speak(&mut self, id: u64, text: &str) {
-        // Don't mix voices: finish with the system voice if it is mid-queue.
-        let system_busy = !self.speech_queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-        if self.kokoro.ready() && !system_busy {
-            return self.kokoro.speak(id, text);
+        if self.kokoro.ready() {
+            self.kokoro.speak(id, text);
         }
-        let utterance =
-            unsafe { AVSpeechUtterance::speechUtteranceWithString(&NSString::from_str(text)) };
-        let mut queue = self.speech_queue.lock().unwrap_or_else(|e| e.into_inner());
-        if queue.is_empty() {
-            self.utterances.clear();
-        }
-        queue.push_back(Queued {
-            utterance: addr(&utterance),
-            id,
-            text: text.to_string(),
-            spoken_utf16: 0,
-        });
-        drop(queue);
-        unsafe { self.synth.speakUtterance(&utterance) };
-        self.utterances.push(utterance);
-        self.last_speak = Some(Instant::now());
     }
 
     fn stop_speaking(&mut self) -> Option<(u64, String)> {
-        if let Some(cut) = self.kokoro.stop() {
-            return Some(cut);
+        self.kokoro.stop()
+    }
+
+    fn hold_speaking(&mut self, hold: bool) {
+        if hold {
+            self.kokoro.pause();
+        } else {
+            self.kokoro.resume();
         }
-        self.last_speak = None;
-        // The front of the queue is what was being spoken.
-        let cut = {
-            let mut queue = self.speech_queue.lock().unwrap_or_else(|e| e.into_inner());
-            let cut = queue
-                .front()
-                .map(|q| (q.id, utf16_prefix(&q.text, q.spoken_utf16).to_string()));
-            queue.clear();
-            cut
-        };
-        unsafe {
-            self.synth.stopSpeakingAtBoundary(AVSpeechBoundary::Immediate);
-        }
-        cut
     }
 
     fn is_speaking(&self) -> bool {
-        // The synthesizer takes a moment to report that a new utterance started.
         self.kokoro.is_speaking()
-            || self
-                .last_speak
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
-            || unsafe { self.synth.isSpeaking() }
     }
 
     fn trim_recording(&mut self) {
@@ -512,15 +392,68 @@ impl Voice for MacVoice {
         self.kokoro.set_voice(id);
     }
 
+    fn transcribers(&self) -> Vec<(String, String)> {
+        Whisper::models()
+    }
+
+    fn transcriber(&self) -> Option<String> {
+        Some(self.whisper.model())
+    }
+
+    fn set_transcriber(&mut self, id: &str) {
+        self.whisper.set_model(id);
+    }
+
+    fn models(&self) -> Vec<super::Model> {
+        let (name, bytes, installed) = Kokoro::model();
+        let whisper = Whisper::all().into_iter().map(|(id, name, bytes, installed)| super::Model {
+            id: format!("whisper:{id}"),
+            name,
+            bytes,
+            installed,
+        });
+        std::iter::once(super::Model { id: "kokoro".into(), name, bytes, installed }).chain(whisper).collect()
+    }
+
+    fn remove_model(&mut self, id: &str) {
+        match id.strip_prefix("whisper:") {
+            Some(model) => self.whisper.remove(model),
+            None if id == "kokoro" => self.kokoro.remove(),
+            None => {}
+        }
+    }
+
+    fn download_model(&mut self, id: &str) {
+        match id.strip_prefix("whisper:") {
+            Some(model) => {
+                self.whisper.set_model(model);
+                self.whisper.allow_downloads();
+            }
+            None if id == "kokoro" => {
+                if self.kokoro.voice() == "none" {
+                    self.kokoro.set_voice(Kokoro::default_voice());
+                }
+                self.kokoro.allow_downloads();
+            }
+            None => {}
+        }
+    }
+
+    fn missing_models(&self) -> Vec<(String, u64)> {
+        self.kokoro.missing().into_iter().chain(self.whisper.missing()).collect()
+    }
+
+    fn allow_downloads(&mut self) {
+        self.kokoro.allow_downloads();
+        self.whisper.allow_downloads();
+    }
+
     fn status(&self) -> Option<String> {
         Some(format!("{}  ·  {}", self.kokoro.describe(), self.whisper.describe()))
     }
 
     fn speaking_progress(&self) -> Option<(u64, usize)> {
-        self.kokoro.progress().or_else(|| {
-            let queue = self.speech_queue.lock().unwrap_or_else(|e| e.into_inner());
-            queue.front().map(|q| (q.id, utf16_prefix(&q.text, q.spoken_utf16).len()))
-        })
+        self.kokoro.progress()
     }
 
     fn start_listening(&mut self) {

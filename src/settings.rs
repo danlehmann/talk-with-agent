@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     /// Id of the chosen speaking voice; None = the backend's default.
     pub voice: Option<String>,
+    /// Id of the chosen transcription engine; None = the backend's default.
+    pub transcriber: Option<String>,
+    /// The user agreed to downloading speech models.
+    pub downloads_allowed: bool,
 }
 
 impl Settings {

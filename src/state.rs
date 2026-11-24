@@ -103,10 +103,24 @@ pub fn random_id() -> String {
     format!("{:016x}{:016x}", r(), r())
 }
 
+/// Points the data folder at a scratch location, for tests.
+#[cfg(test)]
+pub fn use_test_data_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("twa-test-{}", std::process::id()));
+        unsafe { std::env::set_var("TALK_WITH_AGENT_DATA", &dir) };
+        dir
+    })
+    .clone()
+}
+
 pub fn data_dir() -> PathBuf {
-    let dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("TalkWithAgent");
+    // TALK_WITH_AGENT_DATA overrides the location (for trying things out
+    // without touching the real sessions and models).
+    let dir = std::env::var_os("TALK_WITH_AGENT_DATA").map(PathBuf::from).unwrap_or_else(|| {
+        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("TalkWithAgent")
+    });
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

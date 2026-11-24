@@ -1,9 +1,10 @@
 //! Natural-sounding local text-to-speech with the Kokoro model (run by
 //! sherpa-onnx), played through the default audio output.
 //!
-//! Platform-independent: a voice backend uses this once [`Kokoro::ready`] and
-//! falls back to the system voice until then. The model is downloaded once.
+//! Platform-independent. The model is downloaded once; a voice backend can
+//! speak with this once [`Kokoro::ready`].
 
+use super::download::fetch;
 use super::Waker;
 use crate::state::data_dir;
 use rodio::buffer::SamplesBuffer;
@@ -22,6 +23,7 @@ const MODEL_DIR: &str = "kokoro-multi-lang-v1_0";
 const MODEL_URL: &str =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2";
 const ARCHIVE_BYTES: u64 = 349_886_476;
+const ARCHIVE_SHA256: &str = "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4";
 /// The model's English voices; a voice's position here is its speaker id.
 /// Names are <accent><gender>_<name>: a = American, b = British; f / m.
 const VOICES: [&str; 28] = [
@@ -31,6 +33,8 @@ const VOICES: [&str; 28] = [
     "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
 ];
 const DEFAULT_VOICE: usize = 3;
+/// Id of the choice not to speak at all.
+const NONE: &str = "none";
 
 /// "af_heart" -> "Heart (American, female)".
 fn label(voice: &str) -> String {
@@ -46,6 +50,10 @@ fn label(voice: &str) -> String {
 
 #[derive(Clone)]
 enum Status {
+    /// The user chose not to have replies spoken.
+    Off,
+    /// Not on disk, and downloads have not been agreed to.
+    Missing,
     Downloading(u64),
     Loading,
     Ready,
@@ -71,9 +79,15 @@ struct State {
     chunks: Vec<Chunk>,
     player: Option<Arc<Player>>,
     /// Index into [`VOICES`]; applies from the next sentence synthesized.
-    voice: usize,
+    /// None = don't speak (and don't keep the model loaded).
+    voice: Option<usize>,
+    may_download: bool,
+    /// Bumped when the above change, for the worker to reconsider.
+    config: u64,
     /// Bumped by `stop`, so the worker abandons what it was doing.
     epoch: u64,
+    /// Since when playback is paused, if it is.
+    paused: Option<Instant>,
 }
 
 struct Shared {
@@ -93,16 +107,24 @@ pub struct Kokoro {
 
 impl Kokoro {
     /// Starts a worker thread that fetches and loads the model, then speaks.
-    pub fn start(waker: Waker) -> Self {
+    /// `voice` is an id from [`Kokoro::voices`], or None for the default.
+    pub fn start(waker: Waker, voice: Option<&str>, may_download: bool) -> Self {
+        let voice = match voice {
+            Some(NONE) => None,
+            _ => voice.and_then(|id| VOICES.iter().position(|v| *v == id)).or(Some(DEFAULT_VOICE)),
+        };
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                status: Status::Loading,
+                status: Status::Loading, // the worker sets it right away
+                may_download,
+                voice,
+                config: 0,
                 queue: VecDeque::new(),
                 current: None,
                 chunks: Vec::new(),
                 player: None,
-                voice: DEFAULT_VOICE,
                 epoch: 0,
+                paused: None,
             }),
             wake: Condvar::new(),
         });
@@ -111,22 +133,77 @@ impl Kokoro {
         Kokoro { shared }
     }
 
+    /// The user agreed to downloading models.
+    pub fn allow_downloads(&self) {
+        let mut state = self.shared.lock();
+        state.may_download = true;
+        state.config += 1;
+        drop(state);
+        self.shared.wake.notify_all();
+    }
+
+    /// The model, if a voice is chosen but it still has to be downloaded and
+    /// that has not been agreed to: its name and size in bytes.
+    pub fn missing(&self) -> Option<(String, u64)> {
+        let state = self.shared.lock();
+        (state.voice.is_some() && !state.may_download && !installed())
+            .then(|| (format!("{MODEL_NAME} voice"), ARCHIVE_BYTES))
+    }
+
+    pub fn default_voice() -> &'static str {
+        VOICES[DEFAULT_VOICE]
+    }
+
+    /// (name, download size in bytes, whether it is on disk).
+    pub fn model() -> (String, u64, bool) {
+        (format!("{MODEL_NAME} voice"), ARCHIVE_BYTES, installed())
+    }
+
+    /// Delete the model from disk; from then on nothing is spoken.
+    pub fn remove(&self) {
+        self.set_voice(NONE);
+        let _ = std::fs::remove_dir_all(data_dir().join("models").join(MODEL_DIR));
+    }
+
     pub fn voices() -> Vec<(String, String)> {
-        VOICES.iter().map(|v| (v.to_string(), label(v))).collect()
+        let mut voices: Vec<(String, String)> = VOICES.iter().map(|v| (v.to_string(), label(v))).collect();
+        voices.push((NONE.to_string(), "Off (replies are only shown)".to_string()));
+        voices
     }
 
     pub fn voice(&self) -> String {
-        VOICES[self.shared.lock().voice].to_string()
+        self.shared.lock().voice.map_or(NONE, |index| VOICES[index]).to_string()
     }
 
     pub fn set_voice(&self, id: &str) {
-        if let Some(index) = VOICES.iter().position(|v| *v == id) {
-            self.shared.lock().voice = index;
+        let voice = VOICES.iter().position(|v| *v == id);
+        if voice.is_none() && id != NONE {
+            return;
         }
+        let mut state = self.shared.lock();
+        if voice.is_some() != state.voice.is_some() {
+            state.config += 1; // the model has to be loaded or let go
+        }
+        state.voice = voice;
+        if voice.is_none() {
+            // Fall silent at once.
+            state.epoch += 1;
+            state.queue.clear();
+            state.current = None;
+            if let Some(player) = state.player.take() {
+                player.stop();
+            }
+        }
+        drop(state);
+        self.shared.wake.notify_all();
     }
 
+    /// Whether to speak with this voice: it is loaded, or will be in a
+    /// moment (what is queued meanwhile is spoken once it is). False while
+    /// the model is still being downloaded, or if it failed.
     pub fn ready(&self) -> bool {
-        matches!(self.shared.lock().status, Status::Ready)
+        let state = self.shared.lock();
+        state.voice.is_some() && matches!(state.status, Status::Ready | Status::Loading)
     }
 
     /// Queue text to be spoken after anything already queued.
@@ -144,7 +221,31 @@ impl Kokoro {
     pub fn progress(&self) -> Option<(u64, usize)> {
         let state = self.shared.lock();
         let (id, text) = state.current.as_ref()?;
-        Some((*id, heard_bytes(&state.chunks, Instant::now(), text)))
+        Some((*id, heard_bytes(&state.chunks, state.paused.unwrap_or_else(Instant::now), text)))
+    }
+
+    /// Hold playback where it is; `resume` continues from there.
+    pub fn pause(&self) {
+        let mut state = self.shared.lock();
+        if state.paused.is_none() && state.current.is_some() {
+            state.paused = Some(Instant::now());
+            if let Some(player) = &state.player {
+                player.pause();
+            }
+        }
+    }
+
+    pub fn resume(&self) {
+        let mut state = self.shared.lock();
+        if let Some(since) = state.paused.take() {
+            let waited = since.elapsed();
+            for chunk in &mut state.chunks {
+                chunk.starts += waited;
+            }
+            if let Some(player) = &state.player {
+                player.play();
+            }
+        }
     }
 
     /// Stop now and drop everything queued. Returns the id of the utterance
@@ -155,9 +256,10 @@ impl Kokoro {
         if let Some(player) = state.player.take() {
             player.stop();
         }
+        let now = state.paused.take().unwrap_or_else(Instant::now);
         let cut = match state.current.take() {
             Some((id, text)) => {
-                let heard = heard_bytes(&state.chunks, Instant::now(), &text);
+                let heard = heard_bytes(&state.chunks, now, &text);
                 Some((id, text[..heard].to_string()))
             }
             None => state.queue.front().map(|(id, _)| (*id, String::new())),
@@ -172,13 +274,15 @@ impl Kokoro {
     /// One line for the UI.
     pub fn describe(&self) -> String {
         match &self.shared.lock().status {
+            Status::Off => "Voice: off".to_string(),
+            Status::Missing => format!("{MODEL_NAME} voice not downloaded; replies are shown but not spoken"),
             Status::Downloading(bytes) => format!(
-                "Downloading {MODEL_NAME} voice ({}%)… using the system voice meanwhile",
+                "Downloading {MODEL_NAME} voice ({}%)… replies are shown but not spoken until then",
                 (bytes * 100 / ARCHIVE_BYTES).min(99)
             ),
             Status::Loading => format!("Loading {MODEL_NAME} voice…"),
             Status::Ready => format!("Voice: {MODEL_NAME}, on this device"),
-            Status::Failed(e) => format!("{MODEL_NAME} voice unavailable ({e}); using the system voice"),
+            Status::Failed(e) => format!("{MODEL_NAME} voice unavailable ({e}); replies are shown but not spoken"),
         }
     }
 }
@@ -234,41 +338,88 @@ fn run(shared: &Shared, waker: &Waker) {
         shared.lock().status = status;
         waker();
     };
+    // Reports a failure, then waits for the user to change something.
+    let failed = |why: String, config: u64| {
+        let mut state = shared.lock();
+        state.status = Status::Failed(why);
+        waker();
+        while state.config == config {
+            state = shared.wake.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    };
     let dir = data_dir().join("models").join(MODEL_DIR);
-    if !dir.join("model.onnx").exists()
-        && let Err(e) = download(&dir, &|bytes| set(Status::Downloading(bytes)))
-    {
-        return set(Status::Failed(format!("download failed: {e}")));
-    }
-    set(Status::Loading);
     let file = |name: &str| dir.join(name).to_string_lossy().into_owned();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as i32;
-    let mut tts = KokoroTts::new(KokoroTtsConfig {
-        model: file("model.onnx"),
-        voices: file("voices.bin"),
-        tokens: file("tokens.txt"),
-        data_dir: file("espeak-ng-data"),
-        dict_dir: file("dict"),
-        lexicon: format!("{},{}", file("lexicon-us-en.txt"), file("lexicon-zh.txt")),
-        length_scale: 1.0,
-        onnx_config: OnnxConfig {
-            provider: "cpu".into(),
-            debug: false,
-            num_threads: threads,
-        },
-        ..Default::default()
-    });
-    // The first synthesis is slow; get it out of the way.
-    if tts.create("Ready.", DEFAULT_VOICE as i32, 1.0).is_err() {
-        return set(Status::Failed("could not load the model".into()));
+    // Each round: wait until a voice is wanted and the model may be had, load
+    // it, and speak until the user turns the voice off (or removes the model).
+    loop {
+        let config = {
+            let mut state = shared.lock();
+            loop {
+                state.status = if state.voice.is_none() {
+                    Status::Off
+                } else if installed() {
+                    Status::Loading
+                } else if state.may_download {
+                    Status::Downloading(0)
+                } else {
+                    Status::Missing
+                };
+                waker();
+                if matches!(state.status, Status::Loading | Status::Downloading(_)) {
+                    break state.config;
+                }
+                state.queue.clear(); // not to be spoken late
+                let seen = state.config;
+                while state.config == seen {
+                    state = shared.wake.wait(state).unwrap_or_else(|e| e.into_inner());
+                }
+            }
+        };
+        if !installed() {
+            shared.lock().queue.clear();
+            if let Err(e) = download(&dir, &|bytes| set(Status::Downloading(bytes))) {
+                failed(format!("download failed: {e}"), config);
+                continue;
+            }
+        }
+        set(Status::Loading);
+        let mut tts = KokoroTts::new(KokoroTtsConfig {
+            model: file("model.onnx"),
+            voices: file("voices.bin"),
+            tokens: file("tokens.txt"),
+            data_dir: file("espeak-ng-data"),
+            dict_dir: file("dict"),
+            lexicon: format!("{},{}", file("lexicon-us-en.txt"), file("lexicon-zh.txt")),
+            length_scale: 1.0,
+            onnx_config: OnnxConfig {
+                provider: "cpu".into(),
+                debug: false,
+                num_threads: threads,
+            },
+            ..Default::default()
+        });
+        // The first synthesis is slow; get it out of the way.
+        if tts.create("Ready.", DEFAULT_VOICE as i32, 1.0).is_err() {
+            failed("could not load the model".into(), config);
+            continue;
+        }
+        set(Status::Ready);
+        speak_until_off(shared, waker, &mut tts);
     }
-    set(Status::Ready);
+}
+
+/// Speaks what is queued, until no voice is wanted any more.
+fn speak_until_off(shared: &Shared, waker: &Waker, tts: &mut KokoroTts) {
 
     loop {
         // Wait for the next utterance.
         let (id, text, epoch) = {
             let mut state = shared.lock();
             loop {
+                if state.voice.is_none() {
+                    return;
+                }
                 if let Some((id, text)) = state.queue.pop_front() {
                     state.current = Some((id, text.clone()));
                     state.chunks.clear();
@@ -287,6 +438,9 @@ fn run(shared: &Shared, waker: &Waker) {
         if let Some(player) = &player {
             let mut state = shared.lock();
             if state.epoch == epoch {
+                if state.paused.is_some() {
+                    player.pause();
+                }
                 state.player = Some(player.clone());
             }
         }
@@ -298,6 +452,9 @@ fn run(shared: &Shared, waker: &Waker) {
         let mut reopen_if_needed = |output: &mut Option<rodio::MixerDeviceSink>,
                                     player: &mut Option<Arc<Player>>| {
             let state = shared.lock();
+            if state.paused.is_some() {
+                return;
+            }
             let (Some(first), Some(p)) = (state.chunks.first(), player.as_ref()) else {
                 return;
             };
@@ -339,7 +496,8 @@ fn run(shared: &Shared, waker: &Waker) {
                 break;
             }
             reopen_if_needed(&mut output, &mut player);
-            let voice = shared.lock().voice as i32;
+            let Some(voice) = shared.lock().voice else { break };
+            let voice = voice as i32;
             let Ok(audio) = tts.create(&respell(text[range.clone()].trim(), &pronunciations()), voice, 1.0) else {
                 continue;
             };
@@ -351,7 +509,8 @@ fn run(shared: &Shared, waker: &Waker) {
             if state.epoch != epoch {
                 break;
             }
-            let now = Instant::now();
+            // While paused the clock stands still; `resume` shifts every chunk.
+            let now = state.paused.unwrap_or_else(Instant::now);
             let starts = state.chunks.last().map_or(now, |c| (c.starts + c.lasts).max(now));
             player.append(SamplesBuffer::new(NonZero::<u16>::MIN, rate, audio.samples.clone()));
             state.chunks.push(Chunk { starts, lasts, text: range, samples: audio.samples, rate });
@@ -361,7 +520,14 @@ fn run(shared: &Shared, waker: &Waker) {
         loop {
             reopen_if_needed(&mut output, &mut player);
             let state = shared.lock();
-            let done = state.chunks.last().is_none_or(|c| Instant::now() >= c.starts + c.lasts);
+            // By the clock it should be over; but an output that was slow to
+            // start (a headset waking up) is still playing, so give it time to
+            // finish rather than cutting the end off.
+            let done = state.paused.is_none() && state.chunks.last().is_none_or(|c| {
+                let over = c.starts + c.lasts;
+                Instant::now() >= over
+                    && (player.as_ref().is_none_or(|p| p.empty()) || Instant::now() >= over + Duration::from_secs(3))
+            });
             if state.epoch != epoch || done {
                 break;
             }
@@ -386,7 +552,14 @@ fn run(shared: &Shared, waker: &Waker) {
 fn open_output() -> Option<rodio::MixerDeviceSink> {
     let started = Instant::now();
     loop {
-        match DeviceSinkBuilder::open_default_sink() {
+        // The buffer size rodio prefers is more than some devices allow
+        // (Bluetooth headsets in their music mode); then take the device's own.
+        let opened = DeviceSinkBuilder::open_default_sink().or_else(|_| {
+            DeviceSinkBuilder::from_default_device()?
+                .with_buffer_size(rodio::cpal::BufferSize::Default)
+                .open_stream()
+        });
+        match opened {
             Ok(mut output) => {
                 output.log_on_drop(false);
                 if started.elapsed() > Duration::from_millis(100) {
@@ -403,24 +576,17 @@ fn open_output() -> Option<rodio::MixerDeviceSink> {
     }
 }
 
+fn installed() -> bool {
+    data_dir().join("models").join(MODEL_DIR).join("model.onnx").exists()
+}
+
 fn download(dir: &Path, progress: &dyn Fn(u64)) -> Result<(), String> {
     let models = dir.parent().unwrap();
-    std::fs::create_dir_all(models).map_err(|e| e.to_string())?;
-    let archive = models.join(format!("{MODEL_DIR}.tar.bz2.part"));
-    let mut child = Command::new("curl")
-        .args(["-fsSL", "--retry", "3", "-C", "-", "-o"])
-        .arg(&archive)
-        .arg(MODEL_URL)
-        .spawn()
-        .map_err(|e| format!("could not run curl: {e}"))?;
-    loop {
-        progress(std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0));
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) if status.success() => break,
-            Some(status) => return Err(format!("curl exited with {status}")),
-            None => std::thread::sleep(Duration::from_millis(500)),
-        }
-    }
+    let archive = models.join(format!("{MODEL_DIR}.tar.bz2"));
+    fetch(MODEL_URL, &archive, ARCHIVE_SHA256, &|bytes| {
+        progress(bytes);
+        true
+    })?;
     let status = Command::new("tar")
         .arg("-xjf")
         .arg(&archive)

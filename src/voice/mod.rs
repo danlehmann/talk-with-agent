@@ -11,10 +11,30 @@ mod macos;
 mod whisper;
 #[cfg(target_os = "macos")]
 mod kokoro;
+#[cfg(target_os = "macos")]
+mod download;
 #[cfg(not(target_os = "macos"))]
 mod unsupported;
 
 use std::sync::Arc;
+
+/// A downloadable speech model, for the settings screen.
+pub struct Model {
+    pub id: String,
+    pub name: String,
+    /// Download size in bytes.
+    pub bytes: u64,
+    pub installed: bool,
+}
+
+/// A download size for display: "574 MB", "3.1 GB".
+pub fn megabytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1e9)
+    } else {
+        format!("{} MB", bytes / 1_000_000)
+    }
+}
 
 pub enum VoiceEvent {
     /// Best transcription so far of what the user is currently saying.
@@ -41,6 +61,9 @@ pub trait Voice {
     /// actually spoken (as exactly as the platform can tell).
     fn stop_speaking(&mut self) -> Option<(u64, String)>;
     fn is_speaking(&self) -> bool;
+    /// Pause speech where it is (`true`) or carry on from there (`false`).
+    /// Still counts as speaking while held.
+    fn hold_speaking(&mut self, _hold: bool) {}
     /// The utterance being spoken right now and how many bytes of its text
     /// have been spoken so far, for highlighting it on screen.
     fn speaking_progress(&self) -> Option<(u64, usize)> {
@@ -76,6 +99,34 @@ pub trait Voice {
     /// Switch to another voice from [`Voice::voices`]; unknown ids are ignored.
     fn set_voice(&mut self, _id: &str) {}
 
+    /// Transcription engines the user can choose from, as (id, label).
+    fn transcribers(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn transcriber(&self) -> Option<String> {
+        None
+    }
+    fn set_transcriber(&mut self, _id: &str) {}
+
+    /// Every model this backend can use.
+    fn models(&self) -> Vec<Model> {
+        Vec::new()
+    }
+    /// Delete a model from disk. If it was in use, the choice of voice or
+    /// transcriber changes to do without it.
+    fn remove_model(&mut self, _id: &str) {}
+
+    /// Download a model (the user asked for exactly this one) and use it.
+    fn download_model(&mut self, _id: &str) {}
+
+    /// Models that are needed but not on disk, as (name, download size in
+    /// bytes). They are only downloaded after [`Voice::allow_downloads`].
+    fn missing_models(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
+    /// The user agreed to downloading models, now and in future.
+    fn allow_downloads(&mut self) {}
+
     /// One line describing the transcription engine or its setup progress.
     fn status(&self) -> Option<String> {
         None
@@ -85,9 +136,46 @@ pub trait Voice {
     fn poll(&mut self) -> Vec<VoiceEvent>;
 }
 
-pub fn create(waker: Waker) -> Box<dyn Voice> {
+/// `voice` and `transcriber` are the saved choices from [`Voice::voices`] and
+/// [`Voice::transcribers`], if any; `may_download` whether the user has
+/// agreed to downloading models.
+pub fn create(waker: Waker, voice: Option<&str>, transcriber: Option<&str>, may_download: bool) -> Box<dyn Voice> {
     #[cfg(target_os = "macos")]
-    return Box::new(macos::MacVoice::new(waker));
+    return Box::new(macos::MacVoice::new(waker, voice, transcriber, may_download));
     #[cfg(not(target_os = "macos"))]
-    return Box::new(unsupported::NoVoice::new(waker));
+    {
+        let _ = (voice, transcriber, may_download);
+        Box::new(unsupported::NoVoice::new(waker))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::sync::Arc;
+
+    /// With no models on disk and no consent, nothing is fetched: the models
+    /// are reported missing, and choosing to do without Whisper clears it.
+    #[test]
+    fn nothing_downloads_without_consent() {
+        let dir = crate::state::use_test_data_dir();
+        let whisper = super::whisper::Whisper::start(Arc::new(|| {}), None, false);
+        let kokoro = super::kokoro::Kokoro::start(Arc::new(|| {}), None, false);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(whisper.missing().map(|(_, bytes)| bytes), Some(574_041_195));
+        assert!(whisper.describe().contains("not downloaded"), "{}", whisper.describe());
+        assert!(kokoro.missing().is_some());
+        assert!(!kokoro.ready());
+        kokoro.set_voice("none");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(kokoro.missing().is_none());
+        assert_eq!(kokoro.describe(), "Voice: off");
+        whisper.set_model("large-v3");
+        assert_eq!(whisper.missing().map(|(_, bytes)| bytes), Some(3_095_033_483));
+        whisper.set_model("none");
+        assert!(whisper.missing().is_none());
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(whisper.describe(), "Transcription: system recognizer");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.join("models")).map(|d| d.flatten().collect()).unwrap_or_default();
+        assert!(leftovers.is_empty(), "something was downloaded: {leftovers:?}");
+    }
 }

@@ -100,6 +100,10 @@ private final class Microphone: @unchecked Sendable {
             // voice plays, so that voice must not be transcribed back.
             do {
                 try input.setVoiceProcessingEnabled(true)
+                // Automatic gain turns the microphone up while nobody talks,
+                // and then amplifies what is left of the agent's voice when
+                // it starts (measured: about 20 dB), enough to be transcribed.
+                input.isVoiceProcessingAGCEnabled = false
                 // Voice processing lowers other audio by default, including
                 // the agent's voice. Keep that to the minimum.
                 input.voiceProcessingOtherAudioDuckingConfiguration = .init(
