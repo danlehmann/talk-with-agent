@@ -10,7 +10,12 @@ use std::time::Duration;
 /// Download `url` to `dest` (via `<dest>.part`, which an interrupted download
 /// leaves behind and the next one continues). `progress` gets the bytes so
 /// far and returns false to cancel.
-pub fn fetch(url: &str, dest: &Path, sha256: &str, progress: &dyn Fn(u64) -> bool) -> Result<(), String> {
+pub fn fetch(
+    url: &str,
+    dest: &Path,
+    sha256: &str,
+    progress: &dyn Fn(u64) -> bool,
+) -> Result<(), String> {
     let folder = dest.parent().ok_or("no folder")?;
     std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
     let mut part = dest.as_os_str().to_owned();
@@ -53,7 +58,11 @@ fn checksum(path: &Path) -> Result<String, String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 #[cfg(test)]
@@ -64,6 +73,9 @@ mod tests {
         std::fs::write(&path, b"abc").unwrap();
         let sum = super::checksum(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        assert_eq!(sum, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sum,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

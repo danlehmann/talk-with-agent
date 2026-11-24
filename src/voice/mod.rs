@@ -8,13 +8,13 @@
 mod macos;
 // Platform-independent, but so far only the macOS backend records audio for it.
 #[cfg(target_os = "macos")]
-mod whisper;
+mod download;
 #[cfg(target_os = "macos")]
 mod kokoro;
-#[cfg(target_os = "macos")]
-mod download;
 #[cfg(not(target_os = "macos"))]
 mod unsupported;
+#[cfg(target_os = "macos")]
+mod whisper;
 
 use std::sync::Arc;
 
@@ -139,9 +139,19 @@ pub trait Voice {
 /// `voice` and `transcriber` are the saved choices from [`Voice::voices`] and
 /// [`Voice::transcribers`], if any; `may_download` whether the user has
 /// agreed to downloading models.
-pub fn create(waker: Waker, voice: Option<&str>, transcriber: Option<&str>, may_download: bool) -> Box<dyn Voice> {
+pub fn create(
+    waker: Waker,
+    voice: Option<&str>,
+    transcriber: Option<&str>,
+    may_download: bool,
+) -> Box<dyn Voice> {
     #[cfg(target_os = "macos")]
-    return Box::new(macos::MacVoice::new(waker, voice, transcriber, may_download));
+    return Box::new(macos::MacVoice::new(
+        waker,
+        voice,
+        transcriber,
+        may_download,
+    ));
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (voice, transcriber, may_download);
@@ -162,7 +172,11 @@ mod tests {
         let kokoro = super::kokoro::Kokoro::start(Arc::new(|| {}), None, false);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(whisper.missing().map(|(_, bytes)| bytes), Some(574_041_195));
-        assert!(whisper.describe().contains("not downloaded"), "{}", whisper.describe());
+        assert!(
+            whisper.describe().contains("not downloaded"),
+            "{}",
+            whisper.describe()
+        );
         assert!(kokoro.missing().is_some());
         assert!(!kokoro.ready());
         kokoro.set_voice("none");
@@ -170,12 +184,20 @@ mod tests {
         assert!(kokoro.missing().is_none());
         assert_eq!(kokoro.describe(), "Voice: off");
         whisper.set_model("large-v3");
-        assert_eq!(whisper.missing().map(|(_, bytes)| bytes), Some(3_095_033_483));
+        assert_eq!(
+            whisper.missing().map(|(_, bytes)| bytes),
+            Some(3_095_033_483)
+        );
         whisper.set_model("none");
         assert!(whisper.missing().is_none());
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(whisper.describe(), "Transcription: system recognizer");
-        let leftovers: Vec<_> = std::fs::read_dir(dir.join("models")).map(|d| d.flatten().collect()).unwrap_or_default();
-        assert!(leftovers.is_empty(), "something was downloaded: {leftovers:?}");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.join("models"))
+            .map(|d| d.flatten().collect())
+            .unwrap_or_default();
+        assert!(
+            leftovers.is_empty(),
+            "something was downloaded: {leftovers:?}"
+        );
     }
 }

@@ -4,13 +4,13 @@
 //! Platform-independent. The model is downloaded once; a voice backend can
 //! speak with this once [`Kokoro::ready`].
 
-use super::download::fetch;
 use super::Waker;
+use super::download::fetch;
 use crate::state::data_dir;
 use rodio::buffer::SamplesBuffer;
 use rodio::{DeviceSinkBuilder, Player};
-use sherpa_rs::tts::{KokoroTts, KokoroTtsConfig};
 use sherpa_rs::OnnxConfig;
+use sherpa_rs::tts::{KokoroTts, KokoroTtsConfig};
 use std::collections::VecDeque;
 use std::num::NonZero;
 use std::path::Path;
@@ -20,17 +20,40 @@ use std::time::{Duration, Instant};
 
 const MODEL_NAME: &str = "Kokoro";
 const MODEL_DIR: &str = "kokoro-multi-lang-v1_0";
-const MODEL_URL: &str =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2";
+const MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2";
 const ARCHIVE_BYTES: u64 = 349_886_476;
 const ARCHIVE_SHA256: &str = "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4";
 /// The model's English voices; a voice's position here is its speaker id.
 /// Names are <accent><gender>_<name>: a = American, b = British; f / m.
 const VOICES: [&str; 28] = [
-    "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
-    "af_nova", "af_river", "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir",
-    "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa", "bf_alice", "bf_emma",
-    "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_heart",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
 ];
 const DEFAULT_VOICE: usize = 3;
 /// Id of the choice not to speak at all.
@@ -39,8 +62,16 @@ const NONE: &str = "none";
 /// "af_heart" -> "Heart (American, female)".
 fn label(voice: &str) -> String {
     let (kind, name) = voice.split_once('_').unwrap_or(("", voice));
-    let accent = if kind.starts_with('b') { "British" } else { "American" };
-    let gender = if kind.ends_with('m') { "male" } else { "female" };
+    let accent = if kind.starts_with('b') {
+        "British"
+    } else {
+        "American"
+    };
+    let gender = if kind.ends_with('m') {
+        "male"
+    } else {
+        "female"
+    };
     let mut name = name.to_string();
     if let Some(first) = name.get_mut(..1) {
         first.make_ascii_uppercase();
@@ -111,7 +142,9 @@ impl Kokoro {
     pub fn start(waker: Waker, voice: Option<&str>, may_download: bool) -> Self {
         let voice = match voice {
             Some(NONE) => None,
-            _ => voice.and_then(|id| VOICES.iter().position(|v| *v == id)).or(Some(DEFAULT_VOICE)),
+            _ => voice
+                .and_then(|id| VOICES.iter().position(|v| *v == id))
+                .or(Some(DEFAULT_VOICE)),
         };
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -166,13 +199,18 @@ impl Kokoro {
     }
 
     pub fn voices() -> Vec<(String, String)> {
-        let mut voices: Vec<(String, String)> = VOICES.iter().map(|v| (v.to_string(), label(v))).collect();
+        let mut voices: Vec<(String, String)> =
+            VOICES.iter().map(|v| (v.to_string(), label(v))).collect();
         voices.push((NONE.to_string(), "Off (replies are only shown)".to_string()));
         voices
     }
 
     pub fn voice(&self) -> String {
-        self.shared.lock().voice.map_or(NONE, |index| VOICES[index]).to_string()
+        self.shared
+            .lock()
+            .voice
+            .map_or(NONE, |index| VOICES[index])
+            .to_string()
     }
 
     pub fn set_voice(&self, id: &str) {
@@ -221,7 +259,14 @@ impl Kokoro {
     pub fn progress(&self) -> Option<(u64, usize)> {
         let state = self.shared.lock();
         let (id, text) = state.current.as_ref()?;
-        Some((*id, heard_bytes(&state.chunks, state.paused.unwrap_or_else(Instant::now), text)))
+        Some((
+            *id,
+            heard_bytes(
+                &state.chunks,
+                state.paused.unwrap_or_else(Instant::now),
+                text,
+            ),
+        ))
     }
 
     /// Hold playback where it is; `resume` continues from there.
@@ -275,14 +320,18 @@ impl Kokoro {
     pub fn describe(&self) -> String {
         match &self.shared.lock().status {
             Status::Off => "Voice: off".to_string(),
-            Status::Missing => format!("{MODEL_NAME} voice not downloaded; replies are shown but not spoken"),
+            Status::Missing => {
+                format!("{MODEL_NAME} voice not downloaded; replies are shown but not spoken")
+            }
             Status::Downloading(bytes) => format!(
                 "Downloading {MODEL_NAME} voice ({}%)… replies are shown but not spoken until then",
                 (bytes * 100 / ARCHIVE_BYTES).min(99)
             ),
             Status::Loading => format!("Loading {MODEL_NAME} voice…"),
             Status::Ready => format!("Voice: {MODEL_NAME}, on this device"),
-            Status::Failed(e) => format!("{MODEL_NAME} voice unavailable ({e}); replies are shown but not spoken"),
+            Status::Failed(e) => {
+                format!("{MODEL_NAME} voice unavailable ({e}); replies are shown but not spoken")
+            }
         }
     }
 }
@@ -294,7 +343,8 @@ fn heard_bytes(chunks: &[Chunk], now: Instant, text: &str) -> usize {
         if now >= chunk.starts + chunk.lasts {
             heard = chunk.text.end;
         } else if now > chunk.starts {
-            let fraction = (now - chunk.starts).as_secs_f64() / chunk.lasts.as_secs_f64().max(0.001);
+            let fraction =
+                (now - chunk.starts).as_secs_f64() / chunk.lasts.as_secs_f64().max(0.001);
             heard = chunk.text.start + (chunk.text.len() as f64 * fraction) as usize;
         }
     }
@@ -411,7 +461,6 @@ fn run(shared: &Shared, waker: &Waker) {
 
 /// Speaks what is queued, until no voice is wanted any more.
 fn speak_until_off(shared: &Shared, waker: &Waker, tts: &mut KokoroTts) {
-
     loop {
         // Wait for the next utterance.
         let (id, text, epoch) = {
@@ -434,7 +483,9 @@ fn speak_until_off(shared: &Shared, waker: &Waker, tts: &mut KokoroTts) {
         // A fresh output per utterance follows changes of the default device
         // (e.g. headphones connecting).
         let mut output = open_output();
-        let mut player = output.as_ref().map(|o| Arc::new(Player::connect_new(o.mixer())));
+        let mut player = output
+            .as_ref()
+            .map(|o| Arc::new(Player::connect_new(o.mixer())));
         if let Some(player) = &player {
             let mut state = shared.lock();
             if state.epoch == epoch {
@@ -449,71 +500,103 @@ fn speak_until_off(shared: &Shared, waker: &Waker, tts: &mut KokoroTts) {
         // it accepts audio but never plays it. Watch that playback really
         // advances; if not, replace the output and start the utterance again.
         let mut reopens = 0;
-        let mut reopen_if_needed = |output: &mut Option<rodio::MixerDeviceSink>,
-                                    player: &mut Option<Arc<Player>>| {
-            let state = shared.lock();
-            if state.paused.is_some() {
-                return;
-            }
-            let (Some(first), Some(p)) = (state.chunks.first(), player.as_ref()) else {
-                return;
-            };
-            let total: Duration = state.chunks.iter().map(|c| c.lasts).sum();
-            let expected = first.starts.elapsed().min(total);
-            // Chunks that finished playing, plus the position in the current one.
-            let finished = state.chunks.len().saturating_sub(p.len());
-            let played = state.chunks[..finished].iter().map(|c| c.lasts).sum::<Duration>() + p.get_pos();
-            let stalled = (expected > Duration::from_millis(700) && played < expected / 3)
-                || expected > played + Duration::from_millis(1500);
-            if !stalled || reopens >= 20 {
-                return;
-            }
-            drop(state);
-            reopens += 1;
-            eprintln!("[voice] reopening audio output (expected {expected:?}, played {played:?})");
-            *player = None;
-            *output = None;
-            std::thread::sleep(Duration::from_millis(300)); // let the hardware settle
-            *output = open_output();
-            *player = output.as_ref().map(|o| Arc::new(Player::connect_new(o.mixer())));
-            let mut state = shared.lock();
-            if state.epoch != epoch {
-                return;
-            }
-            state.player = player.clone();
-            let mut starts = Instant::now();
-            for chunk in &mut state.chunks {
-                chunk.starts = starts;
-                starts += chunk.lasts;
-                if let Some(player) = player {
-                    player.append(SamplesBuffer::new(NonZero::<u16>::MIN, chunk.rate, chunk.samples.clone()));
+        let mut reopen_if_needed =
+            |output: &mut Option<rodio::MixerDeviceSink>, player: &mut Option<Arc<Player>>| {
+                let state = shared.lock();
+                if state.paused.is_some() {
+                    return;
                 }
-            }
-        };
+                let (Some(first), Some(p)) = (state.chunks.first(), player.as_ref()) else {
+                    return;
+                };
+                let total: Duration = state.chunks.iter().map(|c| c.lasts).sum();
+                let expected = first.starts.elapsed().min(total);
+                // Chunks that finished playing, plus the position in the current one.
+                let finished = state.chunks.len().saturating_sub(p.len());
+                let played = state.chunks[..finished]
+                    .iter()
+                    .map(|c| c.lasts)
+                    .sum::<Duration>()
+                    + p.get_pos();
+                let stalled = (expected > Duration::from_millis(700) && played < expected / 3)
+                    || expected > played + Duration::from_millis(1500);
+                if !stalled || reopens >= 20 {
+                    return;
+                }
+                drop(state);
+                reopens += 1;
+                eprintln!(
+                    "[voice] reopening audio output (expected {expected:?}, played {played:?})"
+                );
+                *player = None;
+                *output = None;
+                std::thread::sleep(Duration::from_millis(300)); // let the hardware settle
+                *output = open_output();
+                *player = output
+                    .as_ref()
+                    .map(|o| Arc::new(Player::connect_new(o.mixer())));
+                let mut state = shared.lock();
+                if state.epoch != epoch {
+                    return;
+                }
+                state.player = player.clone();
+                let mut starts = Instant::now();
+                for chunk in &mut state.chunks {
+                    chunk.starts = starts;
+                    starts += chunk.lasts;
+                    if let Some(player) = player {
+                        player.append(SamplesBuffer::new(
+                            NonZero::<u16>::MIN,
+                            chunk.rate,
+                            chunk.samples.clone(),
+                        ));
+                    }
+                }
+            };
 
         for range in sentences(&text) {
             if shared.lock().epoch != epoch {
                 break;
             }
             reopen_if_needed(&mut output, &mut player);
-            let Some(voice) = shared.lock().voice else { break };
+            let Some(voice) = shared.lock().voice else {
+                break;
+            };
             let voice = voice as i32;
-            let Ok(audio) = tts.create(&respell(text[range.clone()].trim(), &pronunciations()), voice, 1.0) else {
+            let Ok(audio) = tts.create(
+                &respell(text[range.clone()].trim(), &pronunciations()),
+                voice,
+                1.0,
+            ) else {
                 continue;
             };
             let (Some(player), Some(rate)) = (&player, NonZero::new(audio.sample_rate)) else {
                 break;
             };
-            let lasts = Duration::from_secs_f64(audio.samples.len() as f64 / audio.sample_rate as f64);
+            let lasts =
+                Duration::from_secs_f64(audio.samples.len() as f64 / audio.sample_rate as f64);
             let mut state = shared.lock();
             if state.epoch != epoch {
                 break;
             }
             // While paused the clock stands still; `resume` shifts every chunk.
             let now = state.paused.unwrap_or_else(Instant::now);
-            let starts = state.chunks.last().map_or(now, |c| (c.starts + c.lasts).max(now));
-            player.append(SamplesBuffer::new(NonZero::<u16>::MIN, rate, audio.samples.clone()));
-            state.chunks.push(Chunk { starts, lasts, text: range, samples: audio.samples, rate });
+            let starts = state
+                .chunks
+                .last()
+                .map_or(now, |c| (c.starts + c.lasts).max(now));
+            player.append(SamplesBuffer::new(
+                NonZero::<u16>::MIN,
+                rate,
+                audio.samples.clone(),
+            ));
+            state.chunks.push(Chunk {
+                starts,
+                lasts,
+                text: range,
+                samples: audio.samples,
+                rate,
+            });
         }
 
         // Let it play out (or be stopped).
@@ -523,11 +606,13 @@ fn speak_until_off(shared: &Shared, waker: &Waker, tts: &mut KokoroTts) {
             // By the clock it should be over; but an output that was slow to
             // start (a headset waking up) is still playing, so give it time to
             // finish rather than cutting the end off.
-            let done = state.paused.is_none() && state.chunks.last().is_none_or(|c| {
-                let over = c.starts + c.lasts;
-                Instant::now() >= over
-                    && (player.as_ref().is_none_or(|p| p.empty()) || Instant::now() >= over + Duration::from_secs(3))
-            });
+            let done = state.paused.is_none()
+                && state.chunks.last().is_none_or(|c| {
+                    let over = c.starts + c.lasts;
+                    Instant::now() >= over
+                        && (player.as_ref().is_none_or(|p| p.empty())
+                            || Instant::now() >= over + Duration::from_secs(3))
+                });
             if state.epoch != epoch || done {
                 break;
             }
@@ -577,7 +662,11 @@ fn open_output() -> Option<rodio::MixerDeviceSink> {
 }
 
 fn installed() -> bool {
-    data_dir().join("models").join(MODEL_DIR).join("model.onnx").exists()
+    data_dir()
+        .join("models")
+        .join(MODEL_DIR)
+        .join("model.onnx")
+        .exists()
 }
 
 fn download(dir: &Path, progress: &dyn Fn(u64)) -> Result<(), String> {
@@ -623,9 +712,13 @@ fn respell(text: &str, fixes: &[(String, String)]) -> String {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let lookup = |word: &str| -> Option<String> {
         let lower = word.to_lowercase();
-        let find = |w: &str| fixes.iter().find(|(from, _)| from == w).map(|(_, say)| say.clone());
-        find(&lower)
-            .or_else(|| lower.strip_suffix('s').and_then(find).map(|say| say + "s"))
+        let find = |w: &str| {
+            fixes
+                .iter()
+                .find(|(from, _)| from == w)
+                .map(|(_, say)| say.clone())
+        };
+        find(&lower).or_else(|| lower.strip_suffix('s').and_then(find).map(|say| say + "s"))
     };
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -649,7 +742,13 @@ mod tests {
 
     #[test]
     fn respells_whole_words() {
-        let fixes = vec![("callee".to_string(), "call E".to_string()), ("sp".to_string(), "S P".to_string())];
-        assert_eq!(respell("The Callee's sp, callees; spin.", &fixes), "The call E's S P, call Es; spin.");
+        let fixes = vec![
+            ("callee".to_string(), "call E".to_string()),
+            ("sp".to_string(), "S P".to_string()),
+        ];
+        assert_eq!(
+            respell("The Callee's sp, callees; spin.", &fixes),
+            "The call E's S P, call Es; spin."
+        );
     }
 }

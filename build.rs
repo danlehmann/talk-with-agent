@@ -43,7 +43,12 @@ fn main() {
     };
     let sdk = run("xcrun", &["--show-sdk-path"]);
     let swiftc = PathBuf::from(run("xcrun", &["--find", "swiftc"]));
-    let toolchain_lib = swiftc.parent().unwrap().parent().unwrap().join("lib/swift/macosx");
+    let toolchain_lib = swiftc
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("lib/swift/macosx");
     println!("cargo:rustc-link-search=native={sdk}/usr/lib/swift");
     println!("cargo:rustc-link-search=native={}", toolchain_lib.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");

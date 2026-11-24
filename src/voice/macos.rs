@@ -13,20 +13,18 @@ use super::kokoro::Kokoro;
 use super::whisper::Whisper;
 use super::{Voice, VoiceEvent, Waker};
 use block2::RcBlock;
+use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
-use objc2::AnyThread;
-use objc2_avf_audio::{
-    AVAudioApplication, AVAudioEngine, AVAudioPCMBuffer, AVAudioTime,
-};
+use objc2_avf_audio::{AVAudioApplication, AVAudioEngine, AVAudioPCMBuffer, AVAudioTime};
 use objc2_foundation::NSError;
-use std::ffi::{c_char, c_void, CStr};
 use objc2_speech::{
     SFSpeechAudioBufferRecognitionRequest, SFSpeechRecognitionResult, SFSpeechRecognitionTask,
     SFSpeechRecognizer, SFSpeechRecognizerAuthorizationStatus,
 };
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr::NonNull;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 // Implemented in macos/Transcriber.swift.
@@ -65,7 +63,9 @@ extern "C" fn shim_callback(
     let text = if text.is_null() {
         String::new()
     } else {
-        unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(text) }
+            .to_string_lossy()
+            .into_owned()
     };
     let audio = if samples.is_null() {
         Vec::new()
@@ -159,7 +159,12 @@ pub struct MacVoice {
 }
 
 impl MacVoice {
-    pub fn new(waker: Waker, voice: Option<&str>, transcriber: Option<&str>, may_download: bool) -> Self {
+    pub fn new(
+        waker: Waker,
+        voice: Option<&str>,
+        transcriber: Option<&str>,
+        may_download: bool,
+    ) -> Self {
         let (tx, rx) = channel();
         let shim_context = Box::into_raw(Box::new(ShimContext {
             tx: tx.clone(),
@@ -217,7 +222,11 @@ impl MacVoice {
             self.generation += 1;
             eprintln!("[voice] listening #{}: SpeechAnalyzer", self.generation);
             unsafe {
-                twa_transcriber_start(self.generation, self.shim_context as *mut c_void, shim_callback)
+                twa_transcriber_start(
+                    self.generation,
+                    self.shim_context as *mut c_void,
+                    shim_callback,
+                )
             };
             self.active = Some(Active {
                 generation: self.generation,
@@ -310,11 +319,16 @@ impl MacVoice {
                 waker();
             },
         );
-        let task = unsafe { recognizer.recognitionTaskWithRequest_resultHandler(&request, &handler) };
+        let task =
+            unsafe { recognizer.recognitionTaskWithRequest_resultHandler(&request, &handler) };
 
         self.active = Some(Active {
             generation,
-            legacy: Some(Legacy { engine, request, task }),
+            legacy: Some(Legacy {
+                engine,
+                request,
+                task,
+            }),
             last_partial: String::new(),
             stopping: None,
         });
@@ -367,7 +381,11 @@ impl Voice for MacVoice {
     }
 
     fn trim_recording(&mut self) {
-        if self.active.as_ref().is_some_and(|a| a.legacy.is_none() && a.stopping.is_none()) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|a| a.legacy.is_none() && a.stopping.is_none())
+        {
             unsafe { twa_transcriber_trim() };
         }
     }
@@ -406,13 +424,22 @@ impl Voice for MacVoice {
 
     fn models(&self) -> Vec<super::Model> {
         let (name, bytes, installed) = Kokoro::model();
-        let whisper = Whisper::all().into_iter().map(|(id, name, bytes, installed)| super::Model {
-            id: format!("whisper:{id}"),
+        let whisper = Whisper::all()
+            .into_iter()
+            .map(|(id, name, bytes, installed)| super::Model {
+                id: format!("whisper:{id}"),
+                name,
+                bytes,
+                installed,
+            });
+        std::iter::once(super::Model {
+            id: "kokoro".into(),
             name,
             bytes,
             installed,
-        });
-        std::iter::once(super::Model { id: "kokoro".into(), name, bytes, installed }).chain(whisper).collect()
+        })
+        .chain(whisper)
+        .collect()
     }
 
     fn remove_model(&mut self, id: &str) {
@@ -440,7 +467,11 @@ impl Voice for MacVoice {
     }
 
     fn missing_models(&self) -> Vec<(String, u64)> {
-        self.kokoro.missing().into_iter().chain(self.whisper.missing()).collect()
+        self.kokoro
+            .missing()
+            .into_iter()
+            .chain(self.whisper.missing())
+            .collect()
     }
 
     fn allow_downloads(&mut self) {
@@ -449,7 +480,11 @@ impl Voice for MacVoice {
     }
 
     fn status(&self) -> Option<String> {
-        Some(format!("{}  ·  {}", self.kokoro.describe(), self.whisper.describe()))
+        Some(format!(
+            "{}  ·  {}",
+            self.kokoro.describe(),
+            self.whisper.describe()
+        ))
     }
 
     fn speaking_progress(&self) -> Option<(u64, usize)> {
@@ -513,24 +548,37 @@ impl Voice for MacVoice {
                         result.as_ref().map(|t| t.len()),
                         audio.len() as f32 / super::whisper::SAMPLE_RATE as f32
                     );
-                    if self.active.as_ref().is_some_and(|a| a.generation == generation) {
+                    if self
+                        .active
+                        .as_ref()
+                        .is_some_and(|a| a.generation == generation)
+                    {
                         let mut active = self.active.take().unwrap();
                         let user_stopped = active.stopping.is_some();
                         active.stop_audio();
                         // If the system recognizer heard speech, let Whisper
                         // produce the final text from the recording.
                         // A result without a single word (just ".") is noise.
-                        let result = result.map(|t| if t.chars().any(char::is_alphanumeric) { t } else { String::new() });
+                        let result = result.map(|t| {
+                            if t.chars().any(char::is_alphanumeric) {
+                                t
+                            } else {
+                                String::new()
+                            }
+                        });
                         if let Ok(text) = &result
                             && !text.is_empty()
                             && !audio.is_empty()
                         {
-                            let (tx, waker, fallback) = (self.tx.clone(), self.waker.clone(), text.clone());
+                            let (tx, waker, fallback) =
+                                (self.tx.clone(), self.waker.clone(), text.clone());
                             if self.whisper.transcribe(audio, move |better| {
                                 // Keep the live recognizer's text if Whisper's
                                 // doesn't look like the same speech.
                                 let text = better
-                                    .filter(|t| !t.is_empty() && super::whisper::plausible(t, &fallback))
+                                    .filter(|t| {
+                                        !t.is_empty() && super::whisper::plausible(t, &fallback)
+                                    })
                                     .unwrap_or(fallback);
                                 let _ = tx.send(Msg::Refined(generation, text));
                                 waker();

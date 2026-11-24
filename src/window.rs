@@ -43,7 +43,8 @@ pub fn settings_requested() -> bool {
     SETTINGS_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
-static SETTINGS_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SETTINGS_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static WAKER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
@@ -71,7 +72,7 @@ objc2::define_class!(
 #[cfg(target_os = "macos")]
 pub fn install_settings_menu(waker: impl Fn() + Send + Sync + 'static) {
     use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send, sel, ClassType};
+    use objc2::{ClassType, class, msg_send, sel};
     use objc2_foundation::NSString;
     if WAKER.set(Box::new(waker)).is_err() {
         return; // already installed

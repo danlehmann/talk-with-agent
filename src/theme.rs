@@ -1,15 +1,23 @@
 //! Look and feel: the system UI font and a calmer, flatter style than egui's
 //! defaults, in both light and dark.
 
-use eframe::egui::{self, Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Theme};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Theme,
+};
 use std::sync::Arc;
 
 /// (proportional, monospace) font files of the platform's UI typeface.
 fn system_fonts() -> (&'static [&'static str], &'static [&'static str]) {
     if cfg!(target_os = "macos") {
-        (&["/System/Library/Fonts/SFNS.ttf"], &["/System/Library/Fonts/SFNSMono.ttf"])
+        (
+            &["/System/Library/Fonts/SFNS.ttf"],
+            &["/System/Library/Fonts/SFNSMono.ttf"],
+        )
     } else if cfg!(target_os = "windows") {
-        (&["C:\\Windows\\Fonts\\segoeui.ttf"], &["C:\\Windows\\Fonts\\consola.ttf"])
+        (
+            &["C:\\Windows\\Fonts\\segoeui.ttf"],
+            &["C:\\Windows\\Fonts\\consola.ttf"],
+        )
     } else {
         (&[], &[])
     }
@@ -19,10 +27,15 @@ fn system_fonts() -> (&'static [&'static str], &'static [&'static str]) {
 pub fn fonts() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     let (proportional, monospace) = system_fonts();
-    for (family, paths) in [(FontFamily::Proportional, proportional), (FontFamily::Monospace, monospace)] {
+    for (family, paths) in [
+        (FontFamily::Proportional, proportional),
+        (FontFamily::Monospace, monospace),
+    ] {
         if let Some(bytes) = paths.iter().find_map(|path| std::fs::read(path).ok()) {
             let name = format!("system-{family}");
-            fonts.font_data.insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
+            fonts
+                .font_data
+                .insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
             fonts.families.entry(family).or_default().insert(0, name);
         }
     }
@@ -63,36 +76,54 @@ pub fn apply(ctx: &egui::Context) {
         visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
     });
     ctx.style_mut_of(Theme::Dark, |style| {
-        palette(&mut style.visuals, &Palette {
-            panel: Color32::from_gray(30),
-            raised: Color32::from_gray(42),
-            sunken: Color32::from_gray(22),
-            control: [Color32::from_gray(58), Color32::from_gray(72), Color32::from_gray(88)],
-            border: Color32::from_gray(58),
-            control_border: Color32::TRANSPARENT,
-            text: Color32::from_gray(232),
-            weak_text: Color32::from_gray(150),
-            accent: Color32::from_rgb(10, 132, 255),
-        });
+        palette(
+            &mut style.visuals,
+            &Palette {
+                panel: Color32::from_gray(30),
+                raised: Color32::from_gray(42),
+                sunken: Color32::from_gray(22),
+                control: [
+                    Color32::from_gray(58),
+                    Color32::from_gray(72),
+                    Color32::from_gray(88),
+                ],
+                border: Color32::from_gray(58),
+                control_border: Color32::TRANSPARENT,
+                text: Color32::from_gray(232),
+                weak_text: Color32::from_gray(150),
+                accent: Color32::from_rgb(10, 132, 255),
+            },
+        );
     });
     ctx.style_mut_of(Theme::Light, |style| {
-        palette(&mut style.visuals, &Palette {
-            panel: Color32::from_gray(246),
-            raised: Color32::WHITE,
-            sunken: Color32::WHITE,
-            control: [Color32::WHITE, Color32::from_gray(240), Color32::from_gray(226)],
-            border: Color32::from_gray(214),
-            control_border: Color32::from_gray(204),
-            text: Color32::from_gray(28),
-            weak_text: Color32::from_gray(120),
-            accent: Color32::from_rgb(0, 122, 255),
-        });
+        palette(
+            &mut style.visuals,
+            &Palette {
+                panel: Color32::from_gray(246),
+                raised: Color32::WHITE,
+                sunken: Color32::WHITE,
+                control: [
+                    Color32::WHITE,
+                    Color32::from_gray(240),
+                    Color32::from_gray(226),
+                ],
+                border: Color32::from_gray(214),
+                control_border: Color32::from_gray(204),
+                text: Color32::from_gray(28),
+                weak_text: Color32::from_gray(120),
+                accent: Color32::from_rgb(0, 122, 255),
+            },
+        );
     });
 }
 
 /// The session list's background: a shade off the main panel, like a sidebar.
 pub fn sidebar_fill(visuals: &egui::Visuals) -> Color32 {
-    if visuals.dark_mode { Color32::from_gray(38) } else { Color32::from_gray(236) }
+    if visuals.dark_mode {
+        Color32::from_gray(38)
+    } else {
+        Color32::from_gray(236)
+    }
 }
 
 struct Palette {

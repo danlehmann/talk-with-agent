@@ -3,7 +3,7 @@
 
 use crate::settings::Settings;
 use crate::state::{Role, Session, Store};
-use crate::voice::{megabytes, Voice, VoiceEvent};
+use crate::voice::{Voice, VoiceEvent, megabytes};
 use eframe::egui::{self, Color32, RichText};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -70,7 +70,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(store: Arc<Store>, mut voice: Box<dyn Voice>, server: Result<String, String>) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        mut voice: Box<dyn Voice>,
+        server: Result<String, String>,
+    ) -> Self {
         let settings = Settings::load();
         if let Some(id) = &settings.voice {
             voice.set_voice(id);
@@ -212,8 +216,10 @@ impl App {
             ctx.send_viewport_cmd(ViewportCommand::Transparent(false));
             ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
             ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::Normal));
-            let (position, size) =
-                self.full_window.take().unwrap_or((egui::pos2(120.0, 80.0), egui::vec2(900.0, 640.0)));
+            let (position, size) = self
+                .full_window
+                .take()
+                .unwrap_or((egui::pos2(120.0, 80.0), egui::vec2(900.0, 640.0)));
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
             ctx.send_viewport_cmd(ViewportCommand::OuterPosition(position));
             crate::window::set_shadow(true);
@@ -227,7 +233,11 @@ impl App {
     fn overlay(&mut self, ui: &mut egui::Ui) {
         let name_and_status = self.selected.as_ref().and_then(|id| {
             let inner = self.store.lock();
-            inner.sessions.iter().find(|s| &s.id == id).map(|s| (s.name.clone(), status(s)))
+            inner
+                .sessions
+                .iter()
+                .find(|s| &s.id == id)
+                .map(|s| (s.name.clone(), status(s)))
         });
         egui::Frame::new()
             .fill(Color32::from_rgba_unmultiplied(10, 10, 14, 215))
@@ -246,9 +256,15 @@ impl App {
                             ui.label(RichText::new(name).small().color(Color32::from_gray(170)));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let close = egui::Button::new(RichText::new("×").size(22.0).color(Color32::from_gray(220)))
-                                .frame(false);
-                            if ui.add(close).on_hover_text("Back to the full window").clicked() {
+                            let close = egui::Button::new(
+                                RichText::new("×").size(22.0).color(Color32::from_gray(220)),
+                            )
+                            .frame(false);
+                            if ui
+                                .add(close)
+                                .on_hover_text("Back to the full window")
+                                .clicked()
+                            {
                                 self.set_compact(ui.ctx(), false);
                             }
                         });
@@ -264,7 +280,9 @@ impl App {
 
                 if self.paused {
                     if ui
-                        .button(RichText::new("Paused. Click or press play to resume.").color(AMBER))
+                        .button(
+                            RichText::new("Paused. Click or press play to resume.").color(AMBER),
+                        )
                         .clicked()
                     {
                         self.set_paused(false);
@@ -288,7 +306,9 @@ impl App {
                 }
                 if ui
                     .small_button("Side panel")
-                    .on_hover_text("Side panel: a slim always-on-top strip with just the conversation")
+                    .on_hover_text(
+                        "Side panel: a slim always-on-top strip with just the conversation",
+                    )
                     .clicked()
                 {
                     self.set_compact(ui.ctx(), true);
@@ -355,50 +375,63 @@ impl App {
             .collect();
 
         if rows.is_empty() {
-            ui.label(RichText::new("No sessions yet. Paste the prompt into a coding agent to start one.").weak());
+            ui.label(
+                RichText::new(
+                    "No sessions yet. Paste the prompt into a coding agent to start one.",
+                )
+                .weak(),
+            );
         }
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for row in rows {
-                let is_selected = self.selected.as_deref() == Some(&row.id);
-                ui.horizontal(|ui| {
-                    ui.colored_label(row.status.1, "●").on_hover_text(row.status.0);
-                    let mut label = row.name.clone();
-                    if row.unheard > 0 && !is_selected {
-                        label = format!("{label}  ({} new)", row.unheard);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.confirm_delete.as_deref() == Some(&row.id) {
-                            if ui.button("Cancel").clicked() {
-                                self.confirm_delete = None;
-                            }
-                            if ui.button(RichText::new("Delete").color(RED)).clicked() {
-                                if is_selected {
-                                    self.select(None);
-                                }
-                                self.store.delete_session(&row.id);
-                                self.confirm_delete = None;
-                            }
-                        } else if ui
-                            .small_button("×")
-                            .on_hover_text("Delete this session and its history")
-                            .clicked()
-                        {
-                            self.confirm_delete = Some(row.id.clone());
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for row in rows {
+                    let is_selected = self.selected.as_deref() == Some(&row.id);
+                    ui.horizontal(|ui| {
+                        ui.colored_label(row.status.1, "●")
+                            .on_hover_text(row.status.0);
+                        let mut label = row.name.clone();
+                        if row.unheard > 0 && !is_selected {
+                            label = format!("{label}  ({} new)", row.unheard);
                         }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            if ui
-                                .add(egui::Button::selectable(is_selected, label).truncate())
-                                .on_hover_text(row.status.0)
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if self.confirm_delete.as_deref() == Some(&row.id) {
+                                if ui.button("Cancel").clicked() {
+                                    self.confirm_delete = None;
+                                }
+                                if ui.button(RichText::new("Delete").color(RED)).clicked() {
+                                    if is_selected {
+                                        self.select(None);
+                                    }
+                                    self.store.delete_session(&row.id);
+                                    self.confirm_delete = None;
+                                }
+                            } else if ui
+                                .small_button("×")
+                                .on_hover_text("Delete this session and its history")
                                 .clicked()
                             {
-                                self.select(Some(row.id.clone()));
+                                self.confirm_delete = Some(row.id.clone());
                             }
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::selectable(is_selected, label).truncate(),
+                                        )
+                                        .on_hover_text(row.status.0)
+                                        .clicked()
+                                    {
+                                        self.select(Some(row.id.clone()));
+                                    }
+                                },
+                            );
                         });
                     });
-                });
-            }
-        });
+                }
+            });
     }
 
     /// The choice of speaking voice.
@@ -407,22 +440,31 @@ impl App {
         if let Some(current) = self.voice.voice()
             && !voices.is_empty()
         {
-            let shown = voices.iter().find(|(id, _)| *id == current).map_or(current.as_str(), |(_, label)| label);
+            let shown = voices
+                .iter()
+                .find(|(id, _)| *id == current)
+                .map_or(current.as_str(), |(_, label)| label);
             let mut chosen = None;
-            egui::ComboBox::from_label("Voice").selected_text(shown).show_ui(ui, |ui| {
-                for (id, label) in &voices {
-                    if ui.selectable_label(*id == current, label).clicked() && *id != current {
-                        chosen = Some(id.clone());
+            egui::ComboBox::from_label("Voice")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (id, label) in &voices {
+                        if ui.selectable_label(*id == current, label).clicked() && *id != current {
+                            chosen = Some(id.clone());
+                        }
                     }
-                }
-            });
+                });
             if let Some(id) = chosen {
                 self.voice.set_voice(&id);
                 self.settings.voice = Some(id);
                 self.settings.save();
                 // Let the user hear the choice, unless the agent is talking.
                 // (A sample still playing for the previous choice is cut off.)
-                if self.voice.speaking_progress().is_some_and(|(id, _)| id == u64::MAX) {
+                if self
+                    .voice
+                    .speaking_progress()
+                    .is_some_and(|(id, _)| id == u64::MAX)
+                {
                     self.voice.stop_speaking();
                 }
                 if !self.voice.is_speaking() && !self.paused {
@@ -465,36 +507,39 @@ impl App {
         ui.label(RichText::new("Models").strong());
         let models = self.voice.models();
         let status = self.voice.status().unwrap_or_default();
-        egui::Grid::new("models").num_columns(3).spacing([16.0, 8.0]).show(ui, |ui| {
-            for model in &models {
-                ui.label(&model.name);
-                let size = megabytes(model.bytes);
-                if model.installed {
-                    ui.label(RichText::new(format!("Installed  ·  {size}")).color(GREEN));
-                    if self.confirm_remove.as_deref() == Some(model.id.as_str()) {
-                        ui.horizontal(|ui| {
-                            if ui.button(RichText::new("Delete").color(RED)).clicked() {
-                                self.voice.remove_model(&model.id);
-                                self.confirm_remove = None;
-                                self.remember_choices();
-                            }
-                            if ui.button("Keep").clicked() {
-                                self.confirm_remove = None;
-                            }
-                        });
-                    } else if ui.button("Remove").clicked() {
-                        self.confirm_remove = Some(model.id.clone());
+        egui::Grid::new("models")
+            .num_columns(3)
+            .spacing([16.0, 8.0])
+            .show(ui, |ui| {
+                for model in &models {
+                    ui.label(&model.name);
+                    let size = megabytes(model.bytes);
+                    if model.installed {
+                        ui.label(RichText::new(format!("Installed  ·  {size}")).color(GREEN));
+                        if self.confirm_remove.as_deref() == Some(model.id.as_str()) {
+                            ui.horizontal(|ui| {
+                                if ui.button(RichText::new("Delete").color(RED)).clicked() {
+                                    self.voice.remove_model(&model.id);
+                                    self.confirm_remove = None;
+                                    self.remember_choices();
+                                }
+                                if ui.button("Keep").clicked() {
+                                    self.confirm_remove = None;
+                                }
+                            });
+                        } else if ui.button("Remove").clicked() {
+                            self.confirm_remove = Some(model.id.clone());
+                        }
+                    } else {
+                        ui.label(RichText::new(format!("Not installed  ·  {size}")).weak());
+                        if ui.button("Download").clicked() {
+                            self.voice.download_model(&model.id);
+                            self.remember_choices();
+                        }
                     }
-                } else {
-                    ui.label(RichText::new(format!("Not installed  ·  {size}")).weak());
-                    if ui.button("Download").clicked() {
-                        self.voice.download_model(&model.id);
-                        self.remember_choices();
-                    }
+                    ui.end_row();
                 }
-                ui.end_row();
-            }
-        });
+            });
         if !status.is_empty() {
             ui.label(RichText::new(status).small().weak());
         }
@@ -529,21 +574,28 @@ impl App {
     /// The choice of transcription engine.
     fn transcriber_picker(&mut self, ui: &mut egui::Ui) {
         let choices = self.voice.transcribers();
-        let Some(current) = self.voice.transcriber() else { return };
+        let Some(current) = self.voice.transcriber() else {
+            return;
+        };
         if choices.is_empty() {
             return;
         }
         // Short in the closed box, with the details in the list.
         let short = |label: &str| label.split(" (").next().unwrap_or(label).to_string();
-        let shown = choices.iter().find(|(id, _)| *id == current).map_or(current.clone(), |(_, label)| short(label));
+        let shown = choices
+            .iter()
+            .find(|(id, _)| *id == current)
+            .map_or(current.clone(), |(_, label)| short(label));
         let mut chosen = None;
-        egui::ComboBox::from_label("Transcription").selected_text(shown).show_ui(ui, |ui| {
-            for (id, label) in &choices {
-                if ui.selectable_label(*id == current, label).clicked() && *id != current {
-                    chosen = Some(id.clone());
+        egui::ComboBox::from_label("Transcription")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for (id, label) in &choices {
+                    if ui.selectable_label(*id == current, label).clicked() && *id != current {
+                        chosen = Some(id.clone());
+                    }
                 }
-            }
-        });
+            });
         if let Some(id) = chosen {
             self.voice.set_transcriber(&id);
             self.settings.transcriber = Some(id);
@@ -598,7 +650,11 @@ impl App {
             });
         }
         if self.listening {
-            let shown = if self.partial.is_empty() { "Listening…" } else { &self.partial };
+            let shown = if self.partial.is_empty() {
+                "Listening…"
+            } else {
+                &self.partial
+            };
             ui.label(RichText::new(shown).italics().color(BLUE));
         }
         ui.horizontal(|ui| {
@@ -675,7 +731,12 @@ impl App {
             .and_then(|id| inner.sessions.iter().find(|s| &s.id == id));
         let Some(session) = session else {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("Select a session, or connect an agent using the URL on the left.").weak());
+                ui.label(
+                    RichText::new(
+                        "Select a session, or connect an agent using the URL on the left.",
+                    )
+                    .weak(),
+                );
             });
             return;
         };
@@ -707,7 +768,11 @@ impl App {
                             ui.label(RichText::new(time.to_string()).small().weak());
                         }
                         if m.pending && m.role == Role::User {
-                            ui.label(RichText::new("queued — agent isn't listening yet").small().weak());
+                            ui.label(
+                                RichText::new("queued — agent isn't listening yet")
+                                    .small()
+                                    .weak(),
+                            );
                         }
                     });
                     match &m.heard {
@@ -717,7 +782,10 @@ impl App {
                                 ui.label(heard);
                             }
                             if !rest.is_empty() {
-                                ui.label(RichText::new(format!("(interrupted, not heard: {rest})")).weak());
+                                ui.label(
+                                    RichText::new(format!("(interrupted, not heard: {rest})"))
+                                        .weak(),
+                                );
                             }
                         }
                         None => match speaking {
@@ -735,8 +803,16 @@ impl App {
                                 };
                                 let mut job = egui::text::LayoutJob::default();
                                 job.wrap.max_width = ui.available_width();
-                                job.append(&m.text[..spoken], 0.0, format(ui.visuals().strong_text_color()));
-                                job.append(&m.text[spoken..], 0.0, format(ui.visuals().weak_text_color()));
+                                job.append(
+                                    &m.text[..spoken],
+                                    0.0,
+                                    format(ui.visuals().strong_text_color()),
+                                );
+                                job.append(
+                                    &m.text[spoken..],
+                                    0.0,
+                                    format(ui.visuals().weak_text_color()),
+                                );
                                 ui.label(job);
                             }
                             _ => {
@@ -827,10 +903,16 @@ fn foreign(heard: &str, spoken: &str) -> Foreign {
             };
         }
     }
-    let mut result = Foreign { of: n.min(RECENT), ..Default::default() };
+    let mut result = Foreign {
+        of: n.min(RECENT),
+        ..Default::default()
+    };
     let (mut i, mut j) = (0, 0);
     while i < n {
-        if j < m && sounds_alike(&heard[i], &spoken[j]) && table[at(i, j)] == table[at(i + 1, j + 1)] + 1 {
+        if j < m
+            && sounds_alike(&heard[i], &spoken[j])
+            && table[at(i, j)] == table[at(i + 1, j + 1)] + 1
+        {
             (i, j) = (i + 1, j + 1);
         } else if j < m && table[at(i, j + 1)] >= table[at(i + 1, j)] {
             j += 1;
@@ -845,7 +927,9 @@ fn foreign(heard: &str, spoken: &str) -> Foreign {
 
 /// Words that mean "be quiet" on their own.
 fn asks_to_stop(heard: &str) -> bool {
-    words(heard).last().is_some_and(|w| ["stop", "wait", "pause", "hold", "quiet"].contains(&w.as_str()))
+    words(heard)
+        .last()
+        .is_some_and(|w| ["stop", "wait", "pause", "hold", "quiet"].contains(&w.as_str()))
 }
 
 fn status(s: &Session) -> (&'static str, Color32) {
@@ -940,7 +1024,8 @@ impl eframe::App for App {
                 // In hands-free mode the microphone stays open while the agent
                 // talks (so the user can cut in), but the agent doesn't start
                 // talking while the user is in the middle of a sentence.
-                let user_has_floor = self.listening && (!self.hands_free || !self.partial.is_empty());
+                let user_has_floor =
+                    self.listening && (!self.hands_free || !self.partial.is_empty());
                 if s.unheard() > 0 && !user_has_floor && !self.paused {
                     for (i, m) in s.messages.iter_mut().enumerate() {
                         if m.role == Role::Agent && m.pending {
@@ -1098,7 +1183,11 @@ impl eframe::App for App {
         }
         egui::Panel::left("sessions")
             .default_size(260.0)
-            .frame(egui::Frame::new().fill(crate::theme::sidebar_fill(ui.visuals())).inner_margin(12))
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::sidebar_fill(ui.visuals()))
+                    .inner_margin(12),
+            )
             .show(ui, |ui| self.sidebar(ui));
         if self.selected.is_some() {
             egui::Panel::bottom("controls").show(ui, |ui| self.controls(ui));
@@ -1133,7 +1222,10 @@ mod tests {
             Vec::new()
         }
         fn voices(&self) -> Vec<(String, String)> {
-            vec![("a".into(), "Voice A".into()), ("none".into(), "Off".into())]
+            vec![
+                ("a".into(), "Voice A".into()),
+                ("none".into(), "Off".into()),
+            ]
         }
         fn voice(&self) -> Option<String> {
             Some("a".into())
@@ -1146,15 +1238,29 @@ mod tests {
         }
         fn models(&self) -> Vec<Model> {
             vec![
-                Model { id: "voice".into(), name: "Voice model".into(), bytes: 350_000_000, installed: true },
-                Model { id: "small".into(), name: "Small".into(), bytes: 574_000_000, installed: false },
+                Model {
+                    id: "voice".into(),
+                    name: "Voice model".into(),
+                    bytes: 350_000_000,
+                    installed: true,
+                },
+                Model {
+                    id: "small".into(),
+                    name: "Small".into(),
+                    bytes: 574_000_000,
+                    installed: false,
+                },
             ]
         }
         fn remove_model(&mut self, id: &str) {
             self.removed.push(id.to_string());
         }
         fn missing_models(&self) -> Vec<(String, u64)> {
-            if self.downloads_allowed { Vec::new() } else { vec![("Small".into(), 574_000_000)] }
+            if self.downloads_allowed {
+                Vec::new()
+            } else {
+                vec![("Small".into(), 574_000_000)]
+            }
         }
         fn allow_downloads(&mut self) {
             self.downloads_allowed = true;
@@ -1178,7 +1284,10 @@ mod tests {
         assert!(weak.talking() && weak.recent < 3);
         assert!(foreign("Hold on, I am not done here yet", spoken).recent >= 3);
         // Also after a long stretch of echo.
-        let late = foreign("Done, it's inlined. Line 140 now asks whether, no wait, go back please", spoken);
+        let late = foreign(
+            "Done, it's inlined. Line 140 now asks whether, no wait, go back please",
+            spoken,
+        );
         assert!(late.talking() && late.recent >= 3, "{late:?}");
         // The agent's words in another order are not an echo.
         assert!(foreign("item next has the function", spoken).talking());
@@ -1191,7 +1300,11 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::apply(&ctx);
         let store = Arc::new(Store::load());
-        let mut app = App::new(store, Box::new(FakeVoice::default()), Ok("http://127.0.0.1:7717/key".into()));
+        let mut app = App::new(
+            store,
+            Box::new(FakeVoice::default()),
+            Ok("http://127.0.0.1:7717/key".into()),
+        );
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
             ctx.set_theme(theme);
             for settings in [false, true] {

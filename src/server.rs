@@ -103,7 +103,11 @@ fn handle(mut req: Request, store: &Store, base: &str, key: &str) {
         .and_then(|u| u.strip_prefix(key))
         .filter(|r| r.is_empty() || r.starts_with('/') || r.starts_with('?'));
     let (Some(url), None) = (rest, header(&req, "Origin")) else {
-        respond_json(req, 403, json!({"status": "error", "error": "forbidden: use the full URL shown in the app, including the access key"}));
+        respond_json(
+            req,
+            403,
+            json!({"status": "error", "error": "forbidden: use the full URL shown in the app, including the access key"}),
+        );
         return;
     };
 
@@ -134,7 +138,8 @@ fn handle(mut req: Request, store: &Store, base: &str, key: &str) {
             let fresh = query.split('&').any(|kv| kv == "new=1");
             let (id, resumed) = store.open_session(&name, fresh);
             let url = format!("{base}/sessions/{id}");
-            let mut body = json!({"status": "ok", "session_id": id, "session_url": url, "resumed": resumed});
+            let mut body =
+                json!({"status": "ok", "session_id": id, "session_url": url, "resumed": resumed});
             if resumed {
                 let history: Vec<_> = store
                     .recent(&id, 20)
@@ -144,14 +149,20 @@ fn handle(mut req: Request, store: &Store, base: &str, key: &str) {
                     })
                     .collect();
                 body["recent_history"] = json!(history);
-                body["note"] = json!("An earlier conversation with this name exists and was resumed; recent_history shows how it ended. Greet the user as someone continuing that conversation.");
+                body["note"] = json!(
+                    "An earlier conversation with this name exists and was resumed; recent_history shows how it ended. Greet the user as someone continuing that conversation."
+                );
             }
             respond_json(req, 200, body);
         }
         (Method::Post, ["sessions", id, action @ ("say" | "ask")]) => {
             let text = body_text(&mut req, "text");
             if text.is_empty() {
-                respond_json(req, 400, json!({"status": "error", "error": "empty body; send the text to speak as the request body"}));
+                respond_json(
+                    req,
+                    400,
+                    json!({"status": "error", "error": "empty body; send the text to speak as the request body"}),
+                );
                 return;
             }
             match store.agent_says(id, &text) {

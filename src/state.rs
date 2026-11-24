@@ -99,7 +99,11 @@ fn now() -> u64 {
 }
 
 pub fn random_id() -> String {
-    let r = || std::collections::hash_map::RandomState::new().build_hasher().finish();
+    let r = || {
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    };
     format!("{:016x}{:016x}", r(), r())
 }
 
@@ -118,9 +122,13 @@ pub fn use_test_data_dir() -> PathBuf {
 pub fn data_dir() -> PathBuf {
     // TALK_WITH_AGENT_DATA overrides the location (for trying things out
     // without touching the real sessions and models).
-    let dir = std::env::var_os("TALK_WITH_AGENT_DATA").map(PathBuf::from).unwrap_or_else(|| {
-        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("TalkWithAgent")
-    });
+    let dir = std::env::var_os("TALK_WITH_AGENT_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::data_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("TalkWithAgent")
+        });
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -208,9 +216,14 @@ impl Store {
     /// The last few messages of a session, oldest first, as (role, text).
     pub fn recent(&self, id: &str, count: usize) -> Vec<(Role, String)> {
         let mut inner = self.lock();
-        let Some(s) = inner.session(id) else { return Vec::new() };
+        let Some(s) = inner.session(id) else {
+            return Vec::new();
+        };
         let from = s.messages.len().saturating_sub(count);
-        s.messages[from..].iter().map(|m| (m.role, m.text.clone())).collect()
+        s.messages[from..]
+            .iter()
+            .map(|m| (m.role, m.text.clone()))
+            .collect()
     }
 
     /// Speech was paused (not interrupted) at message `index`: queue it and
@@ -330,7 +343,9 @@ impl Store {
     pub fn interrupted(&self, id: &str, index: usize, heard: &str) {
         let mut inner = self.lock();
         let Some(s) = inner.session(id) else { return };
-        let Some(m) = s.messages.get_mut(index) else { return };
+        let Some(m) = s.messages.get_mut(index) else {
+            return;
+        };
         let heard = heard.trim();
         let rest = m.text.get(heard.len()..).unwrap_or("").trim().to_string();
         m.heard = Some(heard.to_string());

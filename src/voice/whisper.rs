@@ -6,11 +6,11 @@
 //! Which model to use is the user's choice; it is downloaded once, and only
 //! after the user agreed to downloads.
 
-use super::download::fetch;
 use super::Waker;
+use super::download::fetch;
 use crate::state::data_dir;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -54,7 +54,10 @@ impl Model {
     }
 
     fn url(&self) -> String {
-        format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}", self.file)
+        format!(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}",
+            self.file
+        )
     }
 }
 
@@ -112,7 +115,10 @@ impl Whisper {
         };
         let shared = Arc::new(Shared {
             status: Mutex::new(Status::Loading),
-            wanted: Mutex::new(Wanted { model, may_download }),
+            wanted: Mutex::new(Wanted {
+                model,
+                may_download,
+            }),
         });
         let (jobs, queue) = channel::<Job>();
         let worker = shared.clone();
@@ -157,9 +163,14 @@ impl Whisper {
                             fetched
                                 .and_then(|()| {
                                     set(Status::Loading);
-                                    WhisperContext::new_with_params(&path, WhisperContextParameters::default())
-                                        .and_then(|context| context.create_state())
-                                        .map_err(|e| Status::Failed(format!("could not load model: {e}")))
+                                    WhisperContext::new_with_params(
+                                        &path,
+                                        WhisperContextParameters::default(),
+                                    )
+                                    .and_then(|context| context.create_state())
+                                    .map_err(|e| {
+                                        Status::Failed(format!("could not load model: {e}"))
+                                    })
                                 })
                                 .map(|state| {
                                     loaded = Some(state);
@@ -183,7 +194,10 @@ impl Whisper {
                 let Ok(job) = queue.recv() else { return };
                 let Job::Transcribe(mut samples, reply) = job else {
                     // Try again what failed or was not allowed before.
-                    if matches!(*worker.status.lock().unwrap(), Status::Missing | Status::Failed(_)) {
+                    if matches!(
+                        *worker.status.lock().unwrap(),
+                        Status::Missing | Status::Failed(_)
+                    ) {
                         settled = None;
                     }
                     continue;
@@ -225,7 +239,11 @@ impl Whisper {
         let mut models: Vec<(String, String)> = MODELS
             .iter()
             .map(|m| {
-                let size = if m.path().exists() { "installed".to_string() } else { super::megabytes(m.bytes) + " download" };
+                let size = if m.path().exists() {
+                    "installed".to_string()
+                } else {
+                    super::megabytes(m.bytes) + " download"
+                };
                 (m.id.to_string(), format!("{} ({}; {size})", m.name, m.note))
             })
             .collect();
@@ -234,7 +252,13 @@ impl Whisper {
     }
 
     pub fn model(&self) -> String {
-        self.shared.wanted.lock().unwrap().model.map_or(NONE, |index| MODELS[index].id).to_string()
+        self.shared
+            .wanted
+            .lock()
+            .unwrap()
+            .model
+            .map_or(NONE, |index| MODELS[index].id)
+            .to_string()
     }
 
     pub fn set_model(&self, id: &str) {
@@ -247,13 +271,25 @@ impl Whisper {
 
     /// Every model: (id, name, download size in bytes, whether it is on disk).
     pub fn all() -> Vec<(String, String, u64, bool)> {
-        MODELS.iter().map(|m| (m.id.to_string(), m.name.to_string(), m.bytes, m.path().exists())).collect()
+        MODELS
+            .iter()
+            .map(|m| {
+                (
+                    m.id.to_string(),
+                    m.name.to_string(),
+                    m.bytes,
+                    m.path().exists(),
+                )
+            })
+            .collect()
     }
 
     /// Delete a model from disk. If it was the one in use, the system
     /// recognizer takes over.
     pub fn remove(&self, id: &str) {
-        let Some(index) = MODELS.iter().position(|m| m.id == id) else { return };
+        let Some(index) = MODELS.iter().position(|m| m.id == id) else {
+            return;
+        };
         if self.shared.wanted.lock().unwrap().model == Some(index) {
             self.set_model(NONE);
         }
@@ -271,25 +307,44 @@ impl Whisper {
     pub fn missing(&self) -> Option<(String, u64)> {
         let wanted = self.shared.wanted.lock().unwrap();
         let model = &MODELS[wanted.model?];
-        (!wanted.may_download && !model.path().exists()).then(|| (model.name.to_string(), model.bytes))
+        (!wanted.may_download && !model.path().exists())
+            .then(|| (model.name.to_string(), model.bytes))
     }
 
     fn name(&self) -> &'static str {
-        self.shared.wanted.lock().unwrap().model.map_or("Whisper", |index| MODELS[index].name)
+        self.shared
+            .wanted
+            .lock()
+            .unwrap()
+            .model
+            .map_or("Whisper", |index| MODELS[index].name)
     }
 
     /// Transcribe 16 kHz mono audio in the background; `reply` gets the text,
     /// or None if it failed. Returns false (without calling `reply`) if the
     /// model is not ready, so the caller can use its fallback.
-    pub fn transcribe(&self, samples: Vec<f32>, reply: impl FnOnce(Option<String>) + Send + 'static) -> bool {
+    pub fn transcribe(
+        &self,
+        samples: Vec<f32>,
+        reply: impl FnOnce(Option<String>) + Send + 'static,
+    ) -> bool {
         matches!(*self.shared.status.lock().unwrap(), Status::Ready)
-            && self.jobs.send(Job::Transcribe(samples, Box::new(reply))).is_ok()
+            && self
+                .jobs
+                .send(Job::Transcribe(samples, Box::new(reply)))
+                .is_ok()
     }
 
     /// One line for the UI.
     pub fn describe(&self) -> String {
         let name = self.name();
-        let total = self.shared.wanted.lock().unwrap().model.map_or(1, |index| MODELS[index].bytes);
+        let total = self
+            .shared
+            .wanted
+            .lock()
+            .unwrap()
+            .model
+            .map_or(1, |index| MODELS[index].bytes);
         match &*self.shared.status.lock().unwrap() {
             Status::Off => "Transcription: system recognizer".to_string(),
             Status::Missing => format!("Transcription: system recognizer ({name} not downloaded)"),
@@ -321,7 +376,9 @@ pub fn plausible(whisper: &str, reference: &str) -> bool {
         // anything short, except Whisper's stock inventions.
         let invented = ["thank", "thanks", "bye", "subscribe", "watching"];
         return ours.len() <= theirs.len() + 4
-            && !ours.iter().any(|w| invented.contains(&w.as_str()) && !theirs.contains(w));
+            && !ours
+                .iter()
+                .any(|w| invented.contains(&w.as_str()) && !theirs.contains(w));
     }
     let shared = theirs.iter().filter(|w| ours.contains(w)).count();
     shared * 10 >= theirs.len() * 4 && ours.len() <= theirs.len() * 2 + 5
