@@ -2,6 +2,9 @@
 name = "talk-with-agent"
 version = "0.1.0"
 edition = "2024"
+description = "Desktop app for talking to coding agents by voice"
+license = "MIT"
+repository = "https://github.com/danlehmann/talk-with-agent"
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

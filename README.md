@@ -72,6 +72,11 @@ echo cancellation), give a live transcript for the preview and for detecting
 pauses, and hand the recorded utterance to `whisper.rs`; `kokoro.rs` can be
 used as is for speech.
 
+## License
+
+MIT; see [LICENSE](LICENSE). The speech models are downloaded separately and
+have their own licenses: Whisper is MIT, Kokoro is Apache 2.0.
+
 ## Disclaimer
 
 This is an independent project. It is not affiliated with, endorsed by, or
